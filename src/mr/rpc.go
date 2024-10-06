@@ -24,6 +24,10 @@ type ExampleReply struct {
 
 // Add your RPC definitions here.
 
+//  0:register 1:ask4job 2:finish
+type Request struct {
+	RequestType int
+}
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.

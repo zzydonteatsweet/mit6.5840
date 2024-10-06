@@ -5,6 +5,7 @@ import "log"
 import "net/rpc"
 import "hash/fnv"
 
+var id = 0
 
 //
 // Map functions return a slice of KeyValue.
@@ -24,13 +25,26 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-
 //
 // main/mrworker.go calls this function.
 //
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
+	fmt.Printf("Worker started.\n")
+	var tmp = 0
+	var id = 0
+	fmt.Println("Worker Registering")
+	ok := call("Coordinator.RegisterWorker", &tmp, &id)
+	fmt.Println("Worker Registered")
+	if ok {
+		job := Job{}
+		ok = call("Coordinator.DistributeJob", &tmp, &job)
+		fmt.Println(job)
 
+		ok = call("Coordinator.FinishJob", &tmp, &id)
+	} else {
+		fmt.Println("Coordinator.RegisterWorker failed.")
+	}
 	// Your worker implementation here.
 
 	// uncomment to send the Example RPC to the coordinator.
@@ -73,9 +87,9 @@ func CallExample() {
 // returns false if something goes wrong.
 //
 func call(rpcname string, args interface{}, reply interface{}) bool {
-	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
-	sockname := coordinatorSock()
-	c, err := rpc.DialHTTP("unix", sockname)
+	c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
+	//sockname := coordinatorSock()
+	//c, err := rpc.DialHTTP("unix", sockname)
 	if err != nil {
 		log.Fatal("dialing:", err)
 	}
