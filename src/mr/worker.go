@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"sort"
 	"strconv"
 )
 import "log"
@@ -47,10 +48,11 @@ func Worker(mapf func(string, string) []KeyValue,
 	fmt.Printf("Worker started.\n")
 	var tmp = 0
 	job := Job{}
-	ok := call("Coordinator.DistributeJob", &tmp, &job)
-	if ok {
+	ok := true
+	for ok {
+		ok = call("Coordinator.DistributeJob", &tmp, &job)
 		jsonStr, _ := json.Marshal(job)
-		fmt.Println("job is %v\n", string(jsonStr))
+		fmt.Printf("job is %v\n\n", string(jsonStr))
 		//  Map
 		if job.JobType == 0 {
 			err := doMap(&job, mapf)
@@ -59,16 +61,59 @@ func Worker(mapf func(string, string) []KeyValue,
 				return
 			}
 		} else if job.JobType == 1 {
-			fmt.Printf("JobType 1")
+			err := doReduce(&job, reducef)
+			if err != nil {
+				fmt.Printf("Worker Reduce processing %v Error %v:\n", job.JobId, err)
+				return
+			}
+		} else {
+			fmt.Printf("All Work is Done")
+			break
 		}
-	} else {
-		fmt.Printf("GetJobFailed, \n")
 	}
 	// Your worker implementation here.
 
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
 
+}
+
+func doReduce(job *Job, reduef func(string, []string) string) error {
+	var kva []KeyValue
+	for _, filename := range job.InputFiles {
+		file, _ := os.Open(filename)
+		dec := json.NewDecoder(file)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+				break
+			}
+			kva = append(kva, kv)
+		}
+		file.Close()
+	}
+
+	sort.Sort(ByKey(kva))
+	i := 0
+	oname := fmt.Sprintf("mr-out-%v", job.MapId)
+	ofile, _ := os.Create(oname)
+
+	for i < len(kva) {
+		j := i + 1
+		for j < len(kva) && kva[j].Key == kva[i].Key {
+			j++
+		}
+		key := kva[i].Key
+		values := []string{}
+		for ; i < j; i++ {
+			values = append(values, kva[i].Value)
+		}
+		output := reduef(key, values)
+		fmt.Fprintf(ofile, "%v %v\n", key, output)
+	}
+
+	jobIsDone(job.JobId)
+	return nil
 }
 
 //func doReduce(job *Job, reducef func(string, []string) string) {

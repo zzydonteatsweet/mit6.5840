@@ -13,7 +13,6 @@ import "net/http"
 
 var distributeLock sync.Mutex
 
-//JobPhase->0:Map 1:Reduce
 type Coordinator struct {
 	// Your definitions here.
 	JobQueue chan *Job
@@ -28,26 +27,86 @@ type Coordinator struct {
 type Job struct {
 	JobId int
 	//  0 Not Started 1 Doing 2 Finish
+	JobProgress int
+	// 0 Map 1 Reduce 2 Finished
 	JobType    int
 	InputFiles []string
 	StartTime  time.Time
+	MapId      int
 	ReduceCnt  int
+	MapCnt     int
 }
 
 func (c *Coordinator) DistributeJob(workerId *int, job *Job) error {
 	distributeLock.Lock()
 	fmt.Printf("DistributeJob workerId %v \n", *workerId)
+	if c.JobPhase == 2 {
+		doneJob := Job{}
+		doneJob.JobType = 2
+		*job = doneJob
+		return nil
+	}
 	*job = *<-c.JobQueue
-	distributeLock.Unlock()
+	job.JobProgress = 1
 	job.StartTime = time.Now()
+	distributeLock.Unlock()
 	fmt.Printf("DistributeJob %v \n", *job)
 	return nil
 }
 
 func (c *Coordinator) FinishJob(workerId *int, jobId *int) error {
 	fmt.Println("server job finished", jobId)
-	c.MapJobList[*jobId].JobType++
+	if *jobId < c.MapCnt {
+		c.MapJobList[*jobId].JobProgress = 2
+		c.insertReduceTask(*jobId)
+	} else {
+		c.ReduceJobList[*jobId-c.MapCnt].JobProgress = 2
+		c.updateJobPhaseFinishedForDone()
+	}
 	return nil
+}
+
+func (c *Coordinator) checkReduceTaskDone() {
+	ok := true
+	for _, job := range c.ReduceJobList {
+		if job.JobProgress < 2 {
+			ok = false
+			break
+		}
+	}
+	if ok {
+		c.JobPhase = 2
+	}
+}
+
+func (c *Coordinator) insertReduceTask(jobId int) {
+	c.ReduceJobList[jobId].ReduceCnt = c.ReduceCnt
+	c.ReduceJobList[jobId].JobType = 1
+	c.ReduceJobList[jobId].JobId = jobId + c.MapCnt
+	c.ReduceJobList[jobId].JobProgress = 0
+	c.ReduceJobList[jobId].MapId = jobId
+	c.ReduceJobList[jobId].MapCnt = c.MapCnt
+
+	for i := 0; i < c.ReduceCnt; i++ {
+		filename := fmt.Sprintf("mr-tmp-%d-%d.txt", jobId, i)
+		c.ReduceJobList[jobId].InputFiles = append(c.ReduceJobList[jobId].InputFiles, filename)
+	}
+	c.JobQueue <- c.ReduceJobList[jobId]
+	c.updateJobPhaseFinishedForReduce()
+}
+
+func (c *Coordinator) updateJobPhaseFinishedForReduce() {
+	ok := true
+	for _, job := range c.MapJobList {
+		if job.JobProgress == 1 {
+			ok = false
+			break
+		}
+	}
+	if ok {
+		c.JobPhase = 1
+		time.Sleep(500)
+	}
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -102,8 +161,9 @@ func (c *Coordinator) checkMapJobStatusNormal() bool {
 
 func (c *Coordinator) checkReduceJobStatusNormal() bool {
 	ret := true
+	currentTime := time.Now()
 	for i := 0; i < c.ReduceCnt; i++ {
-		ret = ret && (c.ReduceJobList[i].JobType == 2)
+		ret = ret && (c.ReduceJobList[i].JobType == 1 && currentTime.Sub(c.ReduceJobList[i].StartTime) > 10*time.Minute)
 	}
 	return ret
 }
@@ -123,6 +183,19 @@ func (c *Coordinator) JobIsDone(jobId *int, state *int) error {
 	c.MapJobList[*jobId].JobType++
 	*state = 1
 	return nil
+}
+
+func (c *Coordinator) updateJobPhaseFinishedForDone() {
+	ok := true
+	for i := 0; i < c.ReduceCnt; i++ {
+		if c.ReduceJobList[i].JobProgress == 1 {
+			ok = false
+			break
+		}
+	}
+	if ok {
+		c.JobPhase = 2
+	}
 }
 
 //
@@ -149,6 +222,8 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		tmp.InputFiles = append(tmp.InputFiles, file)
 		tmp.ReduceCnt = nReduce
 		tmp.JobId = i
+		tmp.MapId = i
+		tmp.MapCnt = len(files)
 		c.MapJobList = append(c.MapJobList, tmp)
 		c.JobQueue <- tmp
 		fmt.Printf("file %v inserted\n", file)
