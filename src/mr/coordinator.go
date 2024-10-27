@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -38,8 +39,9 @@ type Job struct {
 }
 
 func (c *Coordinator) DistributeJob(workerId *int, job *Job) error {
+	//fmt.Printf("DistributeJob workerId %v \n", *workerId)
 	distributeLock.Lock()
-	fmt.Printf("DistributeJob workerId %v \n", *workerId)
+	defer distributeLock.Unlock()
 	if c.JobPhase == 2 {
 		doneJob := Job{}
 		doneJob.JobType = 2
@@ -47,65 +49,68 @@ func (c *Coordinator) DistributeJob(workerId *int, job *Job) error {
 		return nil
 	}
 	*job = *<-c.JobQueue
-	job.JobProgress = 1
-	job.StartTime = time.Now()
-	distributeLock.Unlock()
+	jsonStr, _ := json.Marshal(*job)
+	fmt.Printf("SentJob Is %v\n", string(jsonStr))
+	c.updateJobIsDoing(job.JobId, job)
+
 	fmt.Printf("DistributeJob %v \n", *job)
 	return nil
 }
 
-func (c *Coordinator) FinishJob(workerId *int, jobId *int) error {
-	fmt.Println("server job finished", jobId)
-	if *jobId < c.MapCnt {
-		c.MapJobList[*jobId].JobProgress = 2
-		c.insertReduceTask(*jobId)
-	} else {
-		c.ReduceJobList[*jobId-c.MapCnt].JobProgress = 2
-		c.updateJobPhaseFinishedForDone()
+func (c *Coordinator) updateJobIsDoing(id int, job *Job) {
+	job.JobProgress = 1
+	job.StartTime = time.Now()
+	if c.JobPhase == 0 {
+		c.MapJobList[id].JobProgress = 1
+		c.MapJobList[id].StartTime = time.Now()
+	} else if c.JobPhase == 1 {
+		c.ReduceJobList[id].JobProgress = 1
+		c.ReduceJobList[id].StartTime = time.Now()
 	}
+}
+
+func (c *Coordinator) FinishJob(jobId *int, _ *int) error {
+	fmt.Println("server job finished", *jobId)
+	distributeLock.Lock()
+	defer distributeLock.Unlock()
+	if c.JobPhase == 0 {
+		c.MapJobList[*jobId].JobProgress = 2
+		c.updateJobPhaseFinishedToReduce()
+	} else if c.JobPhase == 1 {
+		c.ReduceJobList[*jobId].JobProgress = 2
+		c.updateJobPhaseFinishedToDone()
+	}
+
 	return nil
 }
 
-func (c *Coordinator) checkReduceTaskDone() {
-	ok := true
-	for _, job := range c.ReduceJobList {
-		if job.JobProgress < 2 {
-			ok = false
-			break
-		}
-	}
-	if ok {
-		c.JobPhase = 2
-	}
-}
-
-func (c *Coordinator) insertReduceTask(jobId int) {
-	c.ReduceJobList[jobId].ReduceCnt = c.ReduceCnt
-	c.ReduceJobList[jobId].JobType = 1
-	c.ReduceJobList[jobId].JobId = jobId + c.MapCnt
-	c.ReduceJobList[jobId].JobProgress = 0
-	c.ReduceJobList[jobId].MapId = jobId
-	c.ReduceJobList[jobId].MapCnt = c.MapCnt
-
+func (c *Coordinator) insertReduceTask() {
 	for i := 0; i < c.ReduceCnt; i++ {
-		filename := fmt.Sprintf("mr-tmp-%d-%d.txt", jobId, i)
-		c.ReduceJobList[jobId].InputFiles = append(c.ReduceJobList[jobId].InputFiles, filename)
+		for j := 0; j < c.MapCnt; j++ {
+			filename := fmt.Sprintf("mr-tmp-%d-%d.txt", j, i)
+			fmt.Printf("Insert Reduce Task FileName is %v \n", filename)
+			c.ReduceJobList[i].InputFiles = append(c.ReduceJobList[i].InputFiles, filename)
+		}
+		c.ReduceJobList[i].ReduceCnt = c.ReduceCnt
+		c.ReduceJobList[i].JobType = 1
+		c.ReduceJobList[i].JobId = i
+		c.ReduceJobList[i].JobProgress = 0
+		c.ReduceJobList[i].MapId = i
+		c.ReduceJobList[i].MapCnt = c.MapCnt
+		c.ReduceJobList[i].ReduceCnt = c.ReduceCnt
+		c.JobQueue <- c.ReduceJobList[i]
 	}
-	c.JobQueue <- c.ReduceJobList[jobId]
-	c.updateJobPhaseFinishedForReduce()
 }
 
-func (c *Coordinator) updateJobPhaseFinishedForReduce() {
+func (c *Coordinator) updateJobPhaseFinishedToReduce() {
 	ok := true
 	for _, job := range c.MapJobList {
-		if job.JobProgress == 1 {
-			ok = false
-			break
-		}
+		ok = ok && (job.JobProgress == 2)
 	}
 	if ok {
+		time.Sleep(time.Second)
 		c.JobPhase = 1
-		time.Sleep(500)
+		c.insertReduceTask()
 	}
 }
 
@@ -159,41 +164,20 @@ func (c *Coordinator) checkMapJobStatusNormal() bool {
 	return ret
 }
 
-func (c *Coordinator) checkReduceJobStatusNormal() bool {
-	ret := true
-	currentTime := time.Now()
-	for i := 0; i < c.ReduceCnt; i++ {
-		ret = ret && (c.ReduceJobList[i].JobType == 1 && currentTime.Sub(c.ReduceJobList[i].StartTime) > 10*time.Minute)
-	}
-	return ret
-}
-
-func (c *Coordinator) checkMapPhaseFinished() bool {
-	ret := true
-	for i := 0; i < len(c.MapJobList); i++ {
-		ret = ret && (c.MapJobList[i].JobType == 2)
-	}
-	if ret {
-		go c.checkReduceJobStatusNormal()
-	}
-	return ret
-}
-
-func (c *Coordinator) JobIsDone(jobId *int, state *int) error {
-	c.MapJobList[*jobId].JobType++
-	*state = 1
-	return nil
-}
-
-func (c *Coordinator) updateJobPhaseFinishedForDone() {
+func (c *Coordinator) updateJobPhaseFinishedToDone() {
 	ok := true
 	for i := 0; i < c.ReduceCnt; i++ {
-		if c.ReduceJobList[i].JobProgress == 1 {
+		if c.ReduceJobList[i].JobProgress != 2 {
+			fmt.Printf(`Check Job For Finish Doing Job is %v
+`, c.ReduceJobList[i])
 			ok = false
 			break
 		}
 	}
 	if ok {
+		for i, v := range c.ReduceJobList {
+			fmt.Printf("Finished %v th Reduce Job %v\n", i, *v)
+		}
 		c.JobPhase = 2
 	}
 }
@@ -213,6 +197,11 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		MapJobList:    make([]*Job, 0),
 		ReduceJobList: make([]*Job, 0),
 	}
+
+	for i := 0; i < nReduce; i++ {
+		c.ReduceJobList = append(c.ReduceJobList, new(Job))
+	}
+
 	// Your code here.
 	for i, file := range files {
 		fmt.Println("insert file ", file)

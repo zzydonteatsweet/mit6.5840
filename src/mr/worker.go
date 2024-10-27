@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"time"
 )
 import "log"
 import "net/rpc"
@@ -47,13 +48,13 @@ func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 	fmt.Printf("Worker started.\n")
 	var tmp = 0
-	job := Job{}
 	ok := true
 	for ok {
+		job := Job{}
 		ok = call("Coordinator.DistributeJob", &tmp, &job)
+		time.Sleep(time.Second)
 		jsonStr, _ := json.Marshal(job)
-		fmt.Printf("job is %v\n\n", string(jsonStr))
-		//  Map
+		fmt.Printf("Receive job is %v\n", string(jsonStr))
 		if job.JobType == 0 {
 			err := doMap(&job, mapf)
 			if err != nil {
@@ -67,7 +68,7 @@ func Worker(mapf func(string, string) []KeyValue,
 				return
 			}
 		} else {
-			fmt.Printf("All Work is Done")
+			fmt.Printf("All Work is Done\n")
 			break
 		}
 	}
@@ -81,7 +82,11 @@ func Worker(mapf func(string, string) []KeyValue,
 func doReduce(job *Job, reduef func(string, []string) string) error {
 	var kva []KeyValue
 	for _, filename := range job.InputFiles {
-		file, _ := os.Open(filename)
+		file, err := os.Open(filename)
+		if err != nil {
+			dir, _ := os.Getwd()
+			fmt.Printf("Error opening file name is %v error is %v path is %v", filename, err, dir)
+		}
 		dec := json.NewDecoder(file)
 		for {
 			var kv KeyValue
@@ -90,14 +95,22 @@ func doReduce(job *Job, reduef func(string, []string) string) error {
 			}
 			kva = append(kva, kv)
 		}
-		file.Close()
+		err = file.Close()
+		if err != nil {
+			dir, _ := os.Getwd()
+			fmt.Printf("Close file error name is %v error is %v path is %v\n", filename, err, dir)
+		}
 	}
 
 	sort.Sort(ByKey(kva))
-	i := 0
-	oname := fmt.Sprintf("mr-out-%v", job.MapId)
-	ofile, _ := os.Create(oname)
 
+	dir, _ := os.Getwd()
+	tmpFile, err := ioutil.TempFile(dir, "mr-tmp-*")
+	if err != nil {
+		fmt.Printf("TempFile Error:%v\n", err)
+	}
+
+	i := 0
 	for i < len(kva) {
 		j := i + 1
 		for j < len(kva) && kva[j].Key == kva[i].Key {
@@ -109,27 +122,14 @@ func doReduce(job *Job, reduef func(string, []string) string) error {
 			values = append(values, kva[i].Value)
 		}
 		output := reduef(key, values)
-		fmt.Fprintf(ofile, "%v %v\n", key, output)
+		fmt.Fprintf(tmpFile, "%v %v\n", key, output)
 	}
-
+	tmpFile.Close()
+	oname := fmt.Sprintf("mr-out-%v", job.JobId)
+	os.Rename(tmpFile.Name(), oname)
 	jobIsDone(job.JobId)
 	return nil
 }
-
-//func doReduce(job *Job, reducef func(string, []string) string) {
-//	intermediate := []KeyValue{}
-//	for _, filename := range job.InputFiles {
-//		file, err := os.Open(filename)
-//		if err != nil {
-//			log.Fatalf("cannot open %v", filename)
-//		}
-//		content, err := ioutil.ReadAll(file)
-//		if err != nil {
-//			log.Fatalf("cannot read %v", filename)
-//		}
-//		intermediate = append(intermediate)
-//	}
-//}
 
 func doMap(job *Job, mapf func(string, string) []KeyValue) error {
 	fmt.Printf("Map Started Job is %v\n", *job)
@@ -138,13 +138,16 @@ func doMap(job *Job, mapf func(string, string) []KeyValue) error {
 	for _, filename := range job.InputFiles {
 		file, err := os.Open(filename)
 		if err != nil {
-			log.Fatalf("cannot open %v", filename)
+			log.Fatalf("Map cannot open %v", filename)
 		}
 		content, err := ioutil.ReadAll(file)
 		if err != nil {
 			log.Fatalf("cannot read %v", filename)
 		}
-		file.Close()
+		err = file.Close()
+		if err != nil {
+			//fmt.Printf("Map Close file error filename is %v message is %v\n", filename, err)
+		}
 		kva := mapf(filename, string(content))
 		for _, kv := range kva {
 			loc := ihash(kv.Key) % reduceCnt
@@ -152,31 +155,32 @@ func doMap(job *Job, mapf func(string, string) []KeyValue) error {
 		}
 	}
 	for i, intermediate := range intermediates {
-		fmt.Printf("len of intermediates %v is %v\n", i, len(intermediates[i]))
+		//fmt.Printf("len of intermediates %v is %v\n", i, len(intermediates[i]))
 
-		interFileName := "mr-tmp-" + strconv.Itoa(job.JobId) + "-" + strconv.Itoa(i)
-		fmt.Println("create file " + interFileName)
+		interFileName := "mr-tmp-" + strconv.Itoa(job.JobId) + "-" + strconv.Itoa(i) + ".txt"
 		ofile, _ := os.Create(interFileName)
 		enc := json.NewEncoder(ofile)
 		for _, kv := range intermediate {
 			enc.Encode(kv)
 		}
 		err := ofile.Close()
+		fmt.Println("create file and insert finished " + interFileName)
 		if err != nil {
 			return err
 		}
 	}
-
 	jobIsDone(job.JobId)
 	return nil
 }
 
 func jobIsDone(jobId int) {
-	fmt.Printf("SendMessage Job %v Done.\n", jobId)
+	fmt.Printf("SendMessage Job %v Start.\n", jobId)
 	state := 0
-	err := call("Coordinator.JobIsDone", &jobId, &state)
+	err := call("Coordinator.FinishJob", &jobId, &state)
 	if err != true {
 		fmt.Printf("Worker SendMessage Job %v Error:%v\n", jobId, err)
+	} else {
+		fmt.Printf("SendMessage Job %v Done.\n\n", jobId)
 	}
 }
 
