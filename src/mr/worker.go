@@ -52,9 +52,8 @@ func Worker(mapf func(string, string) []KeyValue,
 	for ok {
 		job := Job{}
 		ok = call("Coordinator.DistributeJob", &tmp, &job)
-		time.Sleep(time.Second)
-		jsonStr, _ := json.Marshal(job)
-		fmt.Printf("Receive job is %v\n", string(jsonStr))
+		//jsonStr, _ := json.Marshal(job)
+		//fmt.Printf("Receive job is %v\n", string(jsonStr))
 		if job.JobType == 0 {
 			err := doMap(&job, mapf)
 			if err != nil {
@@ -67,9 +66,11 @@ func Worker(mapf func(string, string) []KeyValue,
 				fmt.Printf("Worker Reduce processing %v Error %v:\n", job.JobId, err)
 				return
 			}
-		} else {
+		} else if job.JobType == 2 {
 			fmt.Printf("All Work is Done\n")
 			break
+		} else {
+			time.Sleep(time.Second)
 		}
 	}
 	// Your worker implementation here.
@@ -125,14 +126,14 @@ func doReduce(job *Job, reduef func(string, []string) string) error {
 		fmt.Fprintf(tmpFile, "%v %v\n", key, output)
 	}
 	tmpFile.Close()
-	oname := fmt.Sprintf("mr-out-%v", job.JobId)
+	oname := fmt.Sprintf("mr-out-%v.txt", job.JobId)
 	os.Rename(tmpFile.Name(), oname)
 	jobIsDone(job.JobId)
 	return nil
 }
 
 func doMap(job *Job, mapf func(string, string) []KeyValue) error {
-	fmt.Printf("Map Started Job is %v\n", *job)
+	//fmt.Printf("Map Started Job is %v\n", *job)
 	intermediates := make([][]KeyValue, job.ReduceCnt)
 	reduceCnt := job.ReduceCnt
 	for _, filename := range job.InputFiles {
@@ -164,7 +165,7 @@ func doMap(job *Job, mapf func(string, string) []KeyValue) error {
 			enc.Encode(kv)
 		}
 		err := ofile.Close()
-		fmt.Println("create file and insert finished " + interFileName)
+		//fmt.Println("create file and insert finished " + interFileName)
 		if err != nil {
 			return err
 		}
@@ -174,13 +175,11 @@ func doMap(job *Job, mapf func(string, string) []KeyValue) error {
 }
 
 func jobIsDone(jobId int) {
-	fmt.Printf("SendMessage Job %v Start.\n", jobId)
+	//fmt.Printf("SendMessage Job %v Start.\n", jobId)
 	state := 0
 	err := call("Coordinator.FinishJob", &jobId, &state)
 	if err != true {
 		fmt.Printf("Worker SendMessage Job %v Error:%v\n", jobId, err)
-	} else {
-		fmt.Printf("SendMessage Job %v Done.\n\n", jobId)
 	}
 }
 
