@@ -13,8 +13,6 @@ import "log"
 import "net/rpc"
 import "hash/fnv"
 
-var workerId = 0
-
 // for sorting by key.
 type ByKey []KeyValue
 
@@ -47,11 +45,14 @@ func ihash(key string) int {
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 	fmt.Printf("Worker started.\n")
-	var tmp = 0
 	ok := true
+	var workerId = -1
 	for ok {
 		job := Job{}
-		ok = call("Coordinator.DistributeJob", &tmp, &job)
+		ok = call("Coordinator.DistributeJob", &workerId, &job)
+		if workerId == -1 {
+			workerId = job.WorkerId
+		}
 		//jsonStr, _ := json.Marshal(job)
 		//fmt.Printf("Receive job is %v\n", string(jsonStr))
 		if job.JobType == 0 {
@@ -67,7 +68,7 @@ func Worker(mapf func(string, string) []KeyValue,
 				return
 			}
 		} else if job.JobType == 2 {
-			fmt.Printf("All Work is Done\n")
+			//fmt.Printf("All Work is Done\n")
 			break
 		} else {
 			time.Sleep(time.Second)

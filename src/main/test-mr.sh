@@ -7,17 +7,18 @@
 # un-comment this to run the tests with the Go race detector.
 # RACE=-race
 
-if [[ "$OSTYPE" = "darwin"* ]]
-then
-  if go version | grep 'go1.17.[012345]'
-  then
-    # -race with plug-ins on x86 MacOS 12 with
-    # go1.17 before 1.17.6 sometimes crash.
-    RACE=
-    echo '*** Turning off -race since it may not work on a Mac'
-    echo '    with ' `go version`
-  fi
-fi
+#if [[ "$OSTYPE" = "darwin"* ]]
+#then
+#  if go version | grep 'go1.17.[012345]'
+#  then
+#    # -race with plug-ins on x86 MacOS 12 with
+#    # go1.17 before 1.17.6 sometimes crash.
+#    RACE=
+#    echo '*** Turning off -race since it may not work on a Mac'
+#    echo '    with ' `go version`
+#  fi
+#fi
+RACE=-race
 
 ISQUIET=$1
 maybe_quiet() {
@@ -289,30 +290,37 @@ sort mr-out-0 > mr-correct-crash.txt
 rm -f mr-out*
 
 rm -f mr-done
-((maybe_quiet $TIMEOUT2 ../mrcoordinator ../pg*txt); touch mr-done ) &
+(timeout -k 2s 180s ../mrcoordinator ../pg*txt ; touch mr-done ) &
 sleep 1
 
 # start multiple workers
-maybe_quiet $TIMEOUT2 ../mrworker ../../mrapps/crash.so &
+timeout -k 2s 180s ../mrworker ../../mrapps/crash.so  &
+timeout -k 2s 180s ../mrworker ../../mrapps/crash.so  &
+timeout -k 2s 180s ../mrworker ../../mrapps/crash.so  &
+timeout -k 2s 180s ../mrworker ../../mrapps/crash.so  &
+timeout -k 2s 180s ../mrworker ../../mrapps/crash.so  &
+timeout -k 2s 180s ../mrworker ../../mrapps/crash.so  &
+timeout -k 2s 180s ../mrworker ../../mrapps/crash.so  &
+timeout -k 2s 180s ../mrworker ../../mrapps/crash.so  &
 
 # mimic rpc.go's coordinatorSock()
 SOCKNAME=/var/tmp/5840-mr-`id -u`
 
 ( while [ -e $SOCKNAME -a ! -f mr-done ]
   do
-    maybe_quiet $TIMEOUT2 ../mrworker ../../mrapps/crash.so
+    timeout -k 2s 180s ../mrworker ../../mrapps/crash.so
     sleep 1
   done ) &
 
 ( while [ -e $SOCKNAME -a ! -f mr-done ]
   do
-    maybe_quiet $TIMEOUT2 ../mrworker ../../mrapps/crash.so
+    timeout -k 2s 180s ../mrworker ../../mrapps/crash.so
     sleep 1
   done ) &
 
 while [ -e $SOCKNAME -a ! -f mr-done ]
 do
-  maybe_quiet $TIMEOUT2 ../mrworker ../../mrapps/crash.so
+  timeout -k 2s 180s ../mrworker ../../mrapps/crash.so
   sleep 1
 done
 
